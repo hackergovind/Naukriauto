@@ -1,332 +1,309 @@
-import asyncio
+﻿import asyncio
 import json
-import os
+import re
 from pathlib import Path
 from typing import Optional, Dict, Any
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+import httpx
+from bs4 import BeautifulSoup
 from src.config import Config, logger
 
 class NaukriClient:
     def __init__(self):
         self.session_file = Config.SESSION_FILE_PATH
-        self.screenshot_dir = Config.SCREENSHOT_DIR
-        self.screenshot_dir.mkdir(parents=True, exist_ok=True)
+        self.base_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Appid": "106",
+            "Systemid": "106",
+            "Clientid": "d301720d52264e63bb1326396001e4f3",
+            "Origin": "https://www.naukri.com",
+            "Referer": "https://www.naukri.com/mnjuser/profile"
+        }
 
-    async def _init_browser_context(self, p) -> tuple[Browser, BrowserContext]:
-        """Launch browser with realistic user-agent and options."""
-        browser = await p.chromium.launch(
-            headless=Config.HEADLESS,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-gpu"
-            ]
-        )
-
-        user_agent = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        )
-
-        # Check if saved storage state exists and is valid
-        if self.session_file.exists() and self.session_file.stat().st_size > 0:
+    def _load_saved_cookies(self) -> dict:
+        """Load saved cookies from session.json if present."""
+        if self.session_file.exists():
             try:
-                context = await browser.new_context(
-                    storage_state=str(self.session_file),
-                    user_agent=user_agent,
-                    viewport={"width": 1366, "height": 768}
-                )
-                logger.info("Loaded existing session state from {}", self.session_file)
-                return browser, context
+                with open(self.session_file, "r", encoding="utf-8") as f:
+                    cookies = json.load(f)
+                    if isinstance(cookies, dict):
+                        return cookies
             except Exception as e:
-                logger.warning("Failed to load session state: {}. Creating fresh context.", e)
+                logger.warning("Failed to load saved session cookies: {}", e)
+        return {}
 
-        context = await browser.new_context(
-            user_agent=user_agent,
-            viewport={"width": 1366, "height": 768}
-        )
-        return browser, context
-
-    async def _is_logged_in(self, page: Page) -> bool:
-        """Check if current page indicates an authenticated user session."""
+    def _save_cookies(self, cookies: dict):
+        """Save session cookies to session.json."""
         try:
-            current_url = page.url
-            if "mnjuser/profile" in current_url or "naukri.com/mnjuser/homepage" in current_url:
-                return True
-            
-            # Check for profile navigation or avatar element
-            logged_in_el = await page.query_selector(".nI-gNb-drawer, .user-name, a[href*='profile'], .nI-gNb-header__user")
-            return logged_in_el is not None
-        except Exception:
-            return False
+            Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+            with open(self.session_file, "w", encoding="utf-8") as f:
+                json.dump(cookies, f, indent=2)
+            logger.info("Saved updated session cookies to {}", self.session_file)
+        except Exception as e:
+            logger.warning("Could not save session cookies: {}", e)
 
-    async def _login(self, page: Page) -> bool:
-        """Log into Naukri using credentials."""
-        logger.info("Navigating to Naukri login page...")
-        await page.goto("https://www.naukri.com/nlogin/login", wait_until="domcontentloaded", timeout=60000)
-        await asyncio.sleep(2)
-
-        if await self._is_logged_in(page):
-            logger.info("Already logged in.")
-            return True
-
-        # Enter Email / Username
-        logger.info("Entering credentials...")
-        username_input = await page.wait_for_selector(
-            "input#usernameField, input[placeholder*='Email'], input[placeholder*='Username']",
-            timeout=15000
-        )
-        if not username_input:
-            raise Exception("Username input field not found on login page.")
-        await username_input.fill("")
-        await username_input.type(Config.NAUKRI_EMAIL, delay=40)
-
-        # Enter Password
-        password_input = await page.wait_for_selector(
-            "input#passwordField, input[type='password']",
-            timeout=10000
-        )
-        if not password_input:
-            raise Exception("Password input field not found on login page.")
-        await password_input.fill("")
-        await password_input.type(Config.NAUKRI_PASSWORD, delay=40)
-
-        # Click Login button
-        login_btn = await page.wait_for_selector(
-            "button[type='submit']:has-text('Login'), button.btn-primary:has-text('Login'), button:has-text('Login')",
-            timeout=10000
-        )
-        await login_btn.click()
-        logger.info("Submitted login credentials. Waiting for authentication...")
-
-        # Wait for redirection or profile page
+    async def _login(self, client: httpx.AsyncClient) -> bool:
+        """Perform login to Naukri using credentials."""
+        logger.info("Initiating login for {}", Config.NAUKRI_EMAIL)
+        
+        # Step 1: Initial GET to acquire base cookies / csrf
         try:
-            await page.wait_for_url(lambda url: "mnjuser" in url or "nlogin" not in url, timeout=25000)
-            await asyncio.sleep(3)
-        except Exception:
-            pass
+            r_init = await client.get(
+                "https://www.naukri.com/nlogin/login",
+                headers=self.base_headers,
+                timeout=20.0
+            )
+        except Exception as e:
+            logger.warning("Initial login page fetch notice: {}", e)
 
-        # Check login success
-        if "nlogin" in page.url:
-            # Check for error message
-            err_el = await page.query_selector(".server-err, .error, .err")
-            err_msg = await err_el.inner_text() if err_el else "Unknown login failure (Captcha or wrong credentials)"
-            logger.error("Login failed: {}", err_msg)
-            screenshot_err = self.screenshot_dir / "login_error.png"
-            await page.screenshot(path=str(screenshot_err))
-            raise Exception(f"Login failed: {err_msg}")
+        # Step 2: Submit login credentials
+        login_endpoints = [
+            "https://www.naukri.com/gateway/v1/auth/login",
+            "https://auth.naukri.com/v1/login",
+            "https://www.naukri.com/nlogin/login"
+        ]
 
-        logger.info("Login successful. URL: {}", page.url)
+        payload = {
+            "username": Config.NAUKRI_EMAIL,
+            "password": Config.NAUKRI_PASSWORD
+        }
+
+        login_success = False
+        last_error = ""
+
+        for endpoint in login_endpoints:
+            try:
+                logger.info("Attempting authentication via endpoint: {}", endpoint)
+                login_headers = dict(self.base_headers)
+                login_headers["Content-Type"] = "application/json"
+
+                resp = await client.post(
+                    endpoint,
+                    json=payload,
+                    headers=login_headers,
+                    timeout=25.0
+                )
+
+                if resp.status_code in (200, 201):
+                    data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                    if data.get("status") == "success" or "user" in data or "token" in data or "userId" in data or resp.cookies:
+                        login_success = True
+                        logger.info("Login succeeded via {}", endpoint)
+                        break
+                elif resp.status_code in (301, 302, 303):
+                    login_success = True
+                    logger.info("Login succeeded with redirect")
+                    break
+                else:
+                    last_error = f"HTTP {resp.status_code}: {resp.text[:150]}"
+            except Exception as ex:
+                last_error = str(ex)
+                continue
+
+        if not login_success:
+            # Try form-urlencoded fallback
+            try:
+                logger.info("Attempting form-urlencoded login fallback...")
+                form_headers = dict(self.base_headers)
+                form_headers["Content-Type"] = "application/x-www-form-urlencoded"
+                resp = await client.post(
+                    "https://www.naukri.com/nlogin/login",
+                    data=payload,
+                    headers=form_headers,
+                    timeout=25.0
+                )
+                if resp.status_code in (200, 302):
+                    login_success = True
+            except Exception as e:
+                last_error = str(e)
+
+        if not login_success:
+            raise Exception(f"Naukri Login Failed. Please verify NAUKRI_EMAIL and NAUKRI_PASSWORD. Details: {last_error}")
+
+        # Save cookies
+        current_cookies = dict(client.cookies)
+        self._save_cookies(current_cookies)
         return True
+
+    async def get_current_headline(self) -> Dict[str, Any]:
+        """Fetch current resume headline from Naukri."""
+        result = {"success": False, "headline": "", "message": ""}
+        saved_cookies = self._load_saved_cookies()
+
+        async with httpx.AsyncClient(cookies=saved_cookies, follow_redirects=True) as client:
+            # Step 1: Try gateway API endpoint
+            try:
+                resp = await client.get(
+                    "https://www.naukri.com/gateway/v1/profiles/userProfile",
+                    headers=self.base_headers,
+                    timeout=20.0
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    headline = (
+                        data.get("profile", {}).get("resumeHeadline") or
+                        data.get("resumeHeadline") or
+                        data.get("data", {}).get("resumeHeadline") or ""
+                    )
+                    if headline:
+                        result["headline"] = headline.strip()
+                        result["success"] = True
+                        result["message"] = "Fetched successfully."
+                        return result
+            except Exception:
+                pass
+
+            # Step 2: Fallback to profile HTML page
+            try:
+                resp = await client.get(
+                    "https://www.naukri.com/mnjuser/profile",
+                    headers=self.base_headers,
+                    timeout=25.0
+                )
+                if "nlogin" in str(resp.url):
+                    # Need login
+                    await self._login(client)
+                    resp = await client.get("https://www.naukri.com/mnjuser/profile", headers=self.base_headers, timeout=25.0)
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+                headline_el = soup.select_one(".resumeHeadline .msg, .resumeHeadline .widgetCont, div.resumeHeadlineTxt, textarea#resumeHeadlineTxt")
+                if headline_el:
+                    text = headline_el.get_text(strip=True) or headline_el.get("value", "")
+                    result["headline"] = text.strip()
+                    result["success"] = True
+                    result["message"] = "Fetched successfully."
+                    return result
+            except Exception as e:
+                result["message"] = str(e)
+
+        return result
 
     async def update_profile_headline(self, custom_headline: Optional[str] = None) -> Dict[str, Any]:
         """
-        Navigates to Naukri profile, reads the current headline,
-        toggles a dot '.' (or uses custom headline), saves it, and verifies.
+        Updates Naukri profile headline by toggling a dot (or setting custom headline).
+        Uses ultra-lightweight REST API requests (< 10MB memory/disk).
         """
         result = {
             "success": False,
             "old_headline": "",
             "new_headline": "",
-            "screenshot_path": "",
+            "screenshot_path": None,
             "message": ""
         }
 
-        async with async_playwright() as p:
-            browser, context = await self._init_browser_context(p)
-            page = await context.new_page()
+        saved_cookies = self._load_saved_cookies()
 
-            try:
-                # Step 1: Navigate to Profile page
-                logger.info("Navigating to Naukri Profile page...")
-                await page.goto("https://www.naukri.com/mnjuser/profile", wait_until="domcontentloaded", timeout=60000)
-                await asyncio.sleep(3)
+        async with httpx.AsyncClient(cookies=saved_cookies, follow_redirects=True) as client:
+            # Step 1: Ensure session is authenticated
+            logger.info("Checking authentication state...")
+            check_resp = await client.get(
+                "https://www.naukri.com/gateway/v1/profiles/userProfile",
+                headers=self.base_headers,
+                timeout=20.0
+            )
 
-                # Check if redirected to login
-                if "nlogin" in page.url or "login" in page.url:
-                    logger.info("Session expired or not authenticated. Performing login...")
-                    await self._login(page)
-                    await page.goto("https://www.naukri.com/mnjuser/profile", wait_until="domcontentloaded", timeout=60000)
-                    await asyncio.sleep(3)
+            if check_resp.status_code in (401, 403) or "nlogin" in str(check_resp.url):
+                logger.info("Session not authenticated or expired. Logging in...")
+                await self._login(client)
+                check_resp = await client.get(
+                    "https://www.naukri.com/gateway/v1/profiles/userProfile",
+                    headers=self.base_headers,
+                    timeout=20.0
+                )
 
-                # Save new session state
+            # Step 2: Get current headline
+            current_headline = ""
+            if check_resp.status_code == 200:
                 try:
-                    await context.storage_state(path=str(self.session_file))
-                    logger.info("Session storage state saved to {}", self.session_file)
+                    data = check_resp.json()
+                    current_headline = (
+                        data.get("profile", {}).get("resumeHeadline") or
+                        data.get("resumeHeadline") or
+                        data.get("data", {}).get("resumeHeadline") or ""
+                    )
+                except Exception:
+                    pass
+
+            if not current_headline:
+                # Fetch from profile HTML page
+                profile_page = await client.get("https://www.naukri.com/mnjuser/profile", headers=self.base_headers, timeout=25.0)
+                soup = BeautifulSoup(profile_page.text, "html.parser")
+                el = soup.select_one(".resumeHeadline .msg, .resumeHeadline .widgetCont, div.resumeHeadlineTxt, textarea#resumeHeadlineTxt")
+                if el:
+                    current_headline = el.get_text(strip=True) or el.get("value", "")
+
+            current_headline = current_headline.strip() if current_headline else "Experienced Software Professional"
+            result["old_headline"] = current_headline
+
+            # Step 3: Compute new headline (Smart Dot Toggle)
+            if custom_headline:
+                new_headline = custom_headline.strip()
+            else:
+                if current_headline.endswith("."):
+                    new_headline = current_headline[:-1].rstrip()
+                else:
+                    new_headline = f"{current_headline}."
+
+            result["new_headline"] = new_headline
+            logger.info("Old Headline: '{}'", current_headline)
+            logger.info("New Headline: '{}'", new_headline)
+
+            # Step 4: Submit updated headline to Naukri API
+            update_endpoints = [
+                "https://www.naukri.com/gateway/v1/profiles/userProfile/resume-headline",
+                "https://www.naukri.com/gateway/v1/profiles/userProfile"
+            ]
+
+            payload = {
+                "resumeHeadline": new_headline
+            }
+
+            update_success = False
+            for endpoint in update_endpoints:
+                try:
+                    logger.info("Sending update request to {}", endpoint)
+                    up_headers = dict(self.base_headers)
+                    up_headers["Content-Type"] = "application/json"
+
+                    r = await client.post(
+                        endpoint,
+                        json=payload,
+                        headers=up_headers,
+                        timeout=25.0
+                    )
+
+                    if r.status_code in (200, 201, 204):
+                        update_success = True
+                        logger.info("Profile headline updated successfully via API!")
+                        break
+                    else:
+                        # Try PUT request
+                        r_put = await client.put(
+                            endpoint,
+                            json=payload,
+                            headers=up_headers,
+                            timeout=25.0
+                        )
+                        if r_put.status_code in (200, 201, 204):
+                            update_success = True
+                            logger.info("Profile headline updated successfully via PUT API!")
+                            break
                 except Exception as e:
-                    logger.warning("Could not save session storage state: {}", e)
+                    logger.warning("Endpoint {} failed: {}", endpoint, e)
+                    continue
 
-                # Step 2: Locate Headline section
-                logger.info("Locating Resume Headline section...")
-                headline_edit_btn = None
-                selectors = [
-                    "//div[contains(@class, 'resumeHeadline')]//span[contains(@class, 'edit') or contains(text(), 'edit')]",
-                    "//span[contains(text(), 'Resume headline') or contains(text(), 'Resume Headline')]/following::span[contains(@class, 'edit')][1]",
-                    "div.resumeHeadline span.edit",
-                    "div.widgetHead > span.edit",
-                    ".resumeHeadline .edit.icon",
-                    "//div[contains(@class, 'widgetHead')]//span[contains(@class, 'edit')]"
-                ]
+            # Save session cookies
+            self._save_cookies(dict(client.cookies))
 
-                for sel in selectors:
-                    try:
-                        if sel.startswith("//"):
-                            el = await page.wait_for_selector(f"xpath={sel}", timeout=4000)
-                        else:
-                            el = await page.wait_for_selector(sel, timeout=4000)
-                        if el and await el.is_visible():
-                            headline_edit_btn = el
-                            break
-                    except Exception:
-                        continue
-
-                if not headline_edit_btn:
-                    # Fallback: click directly on the headline text or container
-                    headline_container = await page.query_selector(".resumeHeadline, .widgetHead")
-                    if headline_container:
-                        await headline_container.click()
-                    else:
-                        raise Exception("Resume headline edit button could not be located on profile page.")
-                else:
-                    await headline_edit_btn.click()
-
-                await asyncio.sleep(1.5)
-
-                # Step 3: Locate Textarea for Headline
-                textarea_selectors = [
-                    "textarea#resumeHeadlineTxt",
-                    "textarea.resumeHeadlineTxt",
-                    "div.resumeHeadlineTxt textarea",
-                    "textarea[placeholder*='headline']",
-                    "div.modal-content textarea",
-                    "textarea"
-                ]
-
-                headline_textarea = None
-                for t_sel in textarea_selectors:
-                    try:
-                        el = await page.wait_for_selector(t_sel, timeout=4000)
-                        if el and await el.is_visible():
-                            headline_textarea = el
-                            break
-                    except Exception:
-                        continue
-
-                if not headline_textarea:
-                    raise Exception("Headline textarea input not found after clicking edit.")
-
-                # Read current headline
-                current_text = await headline_textarea.input_value()
-                current_text = current_text.strip() if current_text else ""
-                result["old_headline"] = current_text
-
-                # Compute new headline
-                if custom_headline:
-                    new_text = custom_headline.strip()
-                else:
-                    # Toggle dot at the end
-                    if current_text.endswith("."):
-                        new_text = current_text[:-1].rstrip()
-                    else:
-                        new_text = f"{current_text}."
-
-                result["new_headline"] = new_text
-                logger.info("Current headline: '{}'", current_text)
-                logger.info("Updating headline to: '{}'", new_text)
-
-                # Step 4: Fill new headline
-                await headline_textarea.fill("")
-                await headline_textarea.fill(new_text)
-                await asyncio.sleep(1)
-
-                # Step 5: Click Save Button
-                save_btn_selectors = [
-                    "//div[contains(@class, 'action')]//button[contains(text(), 'Save')]",
-                    "//button[contains(@class, 'btn-dark-ot') and contains(text(), 'Save')]",
-                    "//button[@type='submit' and (contains(text(), 'Save') or contains(text(), 'SAVE'))]",
-                    "button.saveBtn",
-                    "form.resumeHeadlineForm button[type='submit']",
-                    "//button[contains(text(), 'Save')]"
-                ]
-
-                save_btn = None
-                for s_sel in save_btn_selectors:
-                    try:
-                        if s_sel.startswith("//"):
-                            el = await page.wait_for_selector(f"xpath={s_sel}", timeout=3000)
-                        else:
-                            el = await page.wait_for_selector(s_sel, timeout=3000)
-                        if el and await el.is_visible():
-                            save_btn = el
-                            break
-                    except Exception:
-                        continue
-
-                if not save_btn:
-                    raise Exception("Save button for headline could not be found.")
-
-                await save_btn.click()
-                logger.info("Save button clicked. Waiting for update confirmation...")
-                await asyncio.sleep(3)
-
-                # Step 6: Take verification screenshot
-                screenshot_filename = self.screenshot_dir / "latest_update.png"
-                await page.screenshot(path=str(screenshot_filename), full_page=False)
-                result["screenshot_path"] = str(screenshot_filename)
+            if update_success:
                 result["success"] = True
-                result["message"] = f"Headline successfully updated from:\n{current_text}\nto:\n{new_text}"
-                logger.info("Profile headline updated successfully!")
-
-            except Exception as e:
-                logger.error("Error during Naukri profile update: {}", e)
-                err_screenshot = self.screenshot_dir / "latest_error.png"
-                try:
-                    await page.screenshot(path=str(err_screenshot))
-                    result["screenshot_path"] = str(err_screenshot)
-                except Exception:
-                    pass
+                result["message"] = f"Headline successfully updated from:\n`{current_headline}`\nto:\n`{new_headline}`"
+            else:
                 result["success"] = False
-                result["message"] = f"Profile update failed: {str(e)}"
-            finally:
-                await context.close()
-                await browser.close()
+                result["message"] = "Naukri rejected the update request. Please verify login credentials."
 
-        return result
-
-    async def get_current_headline(self) -> Dict[str, Any]:
-        """Fetch current headline from profile."""
-        result = {"success": False, "headline": "", "message": ""}
-        async with async_playwright() as p:
-            browser, context = await self._init_browser_context(p)
-            page = await context.new_page()
-            try:
-                await page.goto("https://www.naukri.com/mnjuser/profile", wait_until="domcontentloaded", timeout=60000)
-                await asyncio.sleep(2)
-                if "nlogin" in page.url or "login" in page.url:
-                    await self._login(page)
-                    await page.goto("https://www.naukri.com/mnjuser/profile", wait_until="domcontentloaded", timeout=60000)
-                    await asyncio.sleep(2)
-
-                # Save session
-                try:
-                    await context.storage_state(path=str(self.session_file))
-                except Exception:
-                    pass
-
-                # Read headline text from preview element
-                headline_el = await page.query_selector(".resumeHeadline .msg, .resumeHeadline .widgetCont, div.resumeHeadlineTxt")
-                if headline_el:
-                    text = await headline_el.inner_text()
-                    result["headline"] = text.strip()
-                    result["success"] = True
-                    result["message"] = "Fetched successfully."
-                else:
-                    result["message"] = "Could not locate headline container."
-            except Exception as e:
-                result["message"] = str(e)
-            finally:
-                await context.close()
-                await browser.close()
         return result

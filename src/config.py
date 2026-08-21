@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
@@ -24,11 +24,10 @@ class Config:
     DAILY_UPDATE_TIME: str = os.getenv("DAILY_UPDATE_TIME", "09:00").strip()
     TIMEZONE: str = os.getenv("TIMEZONE", "Asia/Kolkata").strip()
 
-    # Automation & File Paths
-    HEADLESS: bool = os.getenv("HEADLESS", "true").lower() in ("true", "1", "yes")
-    SESSION_FILE_PATH: Path = BASE_DIR / os.getenv("SESSION_FILE_PATH", "data/session.json")
-    SCREENSHOT_DIR: Path = BASE_DIR / os.getenv("SCREENSHOT_DIR", "data")
+    # File Paths
+    SESSION_FILE_PATH: Path = BASE_DIR / "data" / "session.json"
     LOG_FILE_PATH: Path = BASE_DIR / "data" / "app.log"
+    DATA_DIR: Path = BASE_DIR / "data"
 
     @classmethod
     def validate(cls) -> list[str]:
@@ -42,8 +41,16 @@ class Config:
             errors.append("TELEGRAM_BOT_TOKEN is not set in environment or .env file.")
         return errors
 
+# Ensure data directory exists safely
+try:
+    Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
 # Configure Loguru logger
-Config.SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 logger.remove()
 logger.add(sys.stdout, level="INFO", format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>")
-logger.add(Config.LOG_FILE_PATH, rotation="10 MB", retention="7 days", level="DEBUG", encoding="utf-8")
+try:
+    logger.add(Config.LOG_FILE_PATH, rotation="5 MB", retention="3 days", level="DEBUG", encoding="utf-8")
+except Exception:
+    pass
