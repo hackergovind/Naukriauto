@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+    <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
+    
+    <script type="text/javascript" src ="//static.naukimg.com/s/0/0/j/nLoggerJB_v3.4.min.js"></script>
+    <script type="text/javascript">
+            nLogger.init({
+                "tag":"login",
+                "jsSpa":"\/\/static.naukimg.com\/s\/0\/0\/j\/loggerSPA_v5.9.min.js",
+                "nLogger": {
+                    "beaconUrl":"https:\\/\\/lg.naukri.com\\/uba",
+                    "eventName":"newMonkError",
+                    "deviceType":"SERVER"
+                },
+                "boomerang": {
+                    "logBW": false,
+                    "beaconUrl":"https:\\/\\/lg.naukri.com\\/uba",
+                    "imageURL":"\\/\\/static.naukimg.com\\/s\\/0\\/0\\/i\\/",
+                    "eventName":"newMonkPerformance",
+                    "deviceType":"SERVER"
+                },
+                "tenantId":1,
+                "appId": 106
+            });
+    </script>
+    <link rel="dns-prefetch preconnect" href="//static.naukimg.com" />
+    <link rel="dns-prefetch preconnect" href="//logs.naukri.com" />
+    <link rel="dns-prefetch preconnect" href="//lg.naukri.com" />
+    <link rel="dns-prefetch preconnect" href="https://www.googletagmanager.com" />
+
+    <script>
+
+    (function(){
+
+       var script = document.createElement("script"),
+
+           is_ie = !!navigator.userAgent.match(/Trident/g) || !!navigator.userAgent.match(/MSIE/g) || !!navigator.userAgent.match(/Edge/g);
+
+       script.src = (is_ie) ? "//static.naukimg.com/s/5/100/j/url-polyfill.min.js":'';
+
+       document.getElementsByTagName('head')[0].appendChild(script);
+
+    }());
+
+    </script>
+    <base href="//www.naukri.com/nlogin" />
+    <meta name="google" content="notranslate">
+    <!-- manifest file -->
+    <link rel="shortcut icon" href="/favicon.ico" />
+    <link type="text/css" href="//static.naukimg.com/s/5/105/c/common_v61.min.css" rel="stylesheet">
+    <title>Jobseeker&#39;s Login: Search the Best Jobs available in India &amp; Abroad - Naukri.com</title>
+    <script>
+        window.appId = 106;
+        window.DEBUG = true;
+        window.process = undefined;
+        window.gnb_json={
+           cache: "true",
+           notificationURL: "https://www.naukri.com/recommendapi/v1/notify",
+           domain: ".naukri.com"
+        };
+        var queuedSuperProps = [];
+        var queuedEvents = [];
+        window.ub = {
+            track: function (eventName, eventProps) { queuedEvents.push([eventName, eventProps]) },
+            register: function (properties) { queuedSuperProps.push(properties); }
+        };
+        var script = document.createElement("script");
+        script.async = true;
+        script.src = "//static.naukimg.com/s/0/1/j/ub_v1.16.min.js";
+        script.onload = function () {
+            ub.init({
+                beaconUrl: "https://logs.naukri.com/uba",
+                bulkBeaconUrl: "https://logs.naukri.com/collectorapi/v1/uba/bulk",
+                queuedEvents: queuedEvents,
+                trackTdsCookie : true,
+                queuedSuperProps: queuedSuperProps,
+                tenantId: '1',
+                subclientTenantId: '0',
+                autoTrack: false,
+                blackList: [],
+
+            });
+        };
+        ub.register({ appId: 106, pageName: "login", tenantId: '1', subclientTenantId: '0'});
+        // Page requires login: false
+        document.head.appendChild(script);
+
+    </script>
+<script>
+ var googletag = googletag || {};
+ googletag.cmd = googletag.cmd || [];
+</script>
+
+    <style>.headGNBWrap #blobId{display:none}</style>
+
+
+</head>
+
+<body>
+
+    <img width="99999" height="99999"
+         style="pointer-events:none;position:absolute;top:0;left:0;width:99vw;height:99vh;max-width:99vw;max-height:99vh"
+         src="data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wI iBlbmNvZGluZz0iVVRGLTgiPz48c3ZnIHdpZHRoPSI5OTk5OXB4IiBoZWlnaHQ9Ijk5OTk5cHgiIHZpZXdCb3g9IjAgMCA5OTk5OSA5OTk5OSIgdmVyc2lvbj0iMS4xIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8v d3d3LnczLm9yZy8xOTk5L3hsaW5rIj48ZyBzdHJva2U9Im5vbmUiIGZpbGw9Im5vbmUiIGZpbGwtb3BhY2l0eT0iMCI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9Ijk5OTk5IiBoZWlnaHQ9Ijk5OTk5Ij48L3JlY3Q+IDwvZz4gPC9zdmc+" />
+    <img width="400" height="400" style="pointer-events:none;position:absolute;top:0;left:0;width:400px;height:400px;max-width:400px;max-height:400px;z-index:1000;" src="https://static.naukimg.com/s/0/0/i/transparentImg.png">
+
+    
+        <div id="ni-gnb-header-section" style="min-height: 72px;"></div>
+    
+    <div id="root">
+        
+    </div>
+    <script>
+    //hack of IE and safari bug : Super expression must either be null or a function, not undefined
+    if (typeof HTMLElement !== 'undefined') {
+      if (typeof HTMLElement !== 'function') {
+          var _HTMLElement = function() {};
+          _HTMLElement.prototype = HTMLElement.prototype;
+          HTMLElement = _HTMLElement;
+      }
+    }
+
+    // Download customElement pollyfill if browser not supported
+    if (!('registerElement' in document)) {
+        document.write(decodeURI("%3Cscript src='https://static.naukimg.com/s/0/0/j/customElements.min.js' type='text/javascript' %3E%3C/script%3E"));
+    }
+    </script>
+    <script type="text/javascript" src="https://static.naukimg.com/s/7/0/j/widget-client-ni.min.js" crossorigin="anonymous" defer></script>
+    <script type="text/javascript" src="//static.naukimg.com/s/5/105/j/external_interfaces_v1.min.js" crossorigin="anonymous" defer></script>
+    <script type="text/javascript" src="//static.naukimg.com/s/5/105/j/internal_interfaces_v9.min.js" crossorigin="anonymous" defer></script>
+    <script type="text/javascript" src="//static.naukimg.com/s/5/105/j/require.min.js" crossorigin="anonymous" defer></script>
+    <script type="text/javascript" src="//static.naukimg.com/s/5/105/j/app_v467.min.js" crossorigin="anonymous" defer></script>
+    <script>
+        function isEmailinURL(){
+                   // This regular expression check whether URL contain a email or not
+          const regExp = new RegExp(/([\s]*)([_a-zA-Z0-9-]+(\.[_a-zA-Z0-9-]+)*([ ]+|)@([ ]+|)([a-zA-Z0-9-]+\.)+([a-zA-Z]{2,}))([\s]*)/i);
+          var decodedUrl = decodeURIComponent(location.href);
+          return regExp.test(decodedUrl);
+        };
+        if(!isEmailinURL()){
+          (function(w, d, s, l, i) {
+          w[l] = w[l] || [];
+          w[l].push({
+              'gtm.start': new Date().getTime(),
+              event: 'gtm.js'
+          });
+          var f = d.getElementsByTagName(s)[0],
+              j = d.createElement(s),
+              dl = l != 'dataLayer' ? '&l=' + l : '';
+          j.async = true;
+          j.src =
+              'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
+              'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
+          f.parentNode.insertBefore(j, f);
+      })(window, document, 'script', 'dataLayer', 'GTM-NX744H');
+      }
+    </script>
+    
+</body>
+</html>

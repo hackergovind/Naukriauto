@@ -36,7 +36,10 @@ class TelegramBot:
                 InlineKeyboardButton("⏰ Next Scheduled Run", callback_data="btn_next_run"),
             ],
             [
+                InlineKeyboardButton("🔑 Set Session Cookie", callback_data="btn_cookie_help"),
                 InlineKeyboardButton("📜 Recent Logs", callback_data="btn_logs"),
+            ],
+            [
                 InlineKeyboardButton("❓ Help & Commands", callback_data="btn_help"),
             ]
         ]
@@ -44,7 +47,7 @@ class TelegramBot:
 
     def _mask_email(self, email: str) -> str:
         if "@" not in email:
-            return "***"
+            return email[:4] + "***" if email else "Not Set"
         parts = email.split("@")
         name = parts[0]
         domain = parts[1]
@@ -138,6 +141,42 @@ class TelegramBot:
         else:
             await status_msg.edit_text(f"⚠️ *Could not fetch headline:* {res['message']}")
 
+    async def set_cookie_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not self._is_user_authorized(user_id):
+            return
+
+        if not context.args or len(context.args) == 0:
+            help_msg = (
+                "🔑 *How to Set Session Cookie:*\n\n"
+                "1. Open Naukri on your browser and login.\n"
+                "2. Press `F12` (Developer Tools) ➔ Go to **Network** tab ➔ Refresh.\n"
+                "3. Click any request to `naukri.com` and copy the **`Cookie`** header value.\n"
+                "4. Send it here like this:\n"
+                "`/set_cookie <your_cookie_string>`\n\n"
+                "💡 *This keeps your bot connected 24/7 without needing passwords.*"
+            )
+            await update.message.reply_text(help_msg, parse_mode="Markdown")
+            return
+
+        raw_cookie = " ".join(context.args).strip()
+        client = self.scheduler_mgr.client
+        saved = client.save_raw_cookie_string(raw_cookie)
+        if saved:
+            status_msg = await update.message.reply_text("⏳ *Validating session cookie with Naukri...*", parse_mode="Markdown")
+            res = await client.get_current_headline()
+            if res["success"]:
+                await status_msg.edit_text(
+                    f"✅ *Session Cookie Saved & Verified!*\n\n"
+                    f"📝 *Detected Headline:* `{res['headline']}`\n\n"
+                    "Daily automatic updates are now active!",
+                    parse_mode="Markdown"
+                )
+            else:
+                await status_msg.edit_text("✅ *Session Cookie Saved!* You can now run `/update_now`.", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("❌ *Failed to parse cookie string.* Please make sure it is in `key=value;` format.", parse_mode="Markdown")
+
     async def set_time_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         if not self._is_user_authorized(user_id):
@@ -207,6 +246,7 @@ class TelegramBot:
             "🔹 `/update_now` - Trigger immediate headline update\n"
             "🔹 `/status` - View scheduler status & next run time\n"
             "🔹 `/headline` - Fetch current headline from Naukri\n"
+            "🔹 `/set_cookie <cookie>` - Set browser session cookies\n"
             "🔹 `/set_time <HH:MM>` - Change daily schedule time (24-hr format)\n"
             "🔹 `/logs` - Show recent application logs\n"
             "🔹 `/help` - Show this help message\n\n"
@@ -232,6 +272,11 @@ class TelegramBot:
             await self.status_cmd(update, context)
         elif data == "btn_headline":
             await self.headline_cmd(update, context)
+        elif data == "btn_cookie_help":
+            await query.message.reply_text(
+                "🔑 *To set your session cookie:*\nSend `/set_cookie <your_browser_cookies>` in chat.",
+                parse_mode="Markdown"
+            )
         elif data == "btn_next_run":
             next_run = self.scheduler_mgr.get_next_run_time()
             await query.message.reply_text(
@@ -249,6 +294,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("update_now", self.update_now_cmd))
         self.app.add_handler(CommandHandler("status", self.status_cmd))
         self.app.add_handler(CommandHandler("headline", self.headline_cmd))
+        self.app.add_handler(CommandHandler("set_cookie", self.set_cookie_cmd))
         self.app.add_handler(CommandHandler("set_time", self.set_time_cmd))
         self.app.add_handler(CommandHandler("logs", self.logs_cmd))
         self.app.add_handler(CommandHandler("help", self.help_cmd))

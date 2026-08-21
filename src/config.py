@@ -4,14 +4,24 @@ from pathlib import Path
 from dotenv import load_dotenv
 from loguru import logger
 
-# Load .env file from project root
+# Load .env file from project root safely stripping any BOM
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+env_file = BASE_DIR / ".env"
+if env_file.exists():
+    try:
+        raw_bytes = env_file.read_bytes()
+        if raw_bytes.startswith(b"\xef\xbb\xbf"):
+            env_file.write_bytes(raw_bytes[3:])
+    except Exception:
+        pass
+
+load_dotenv(env_file)
 
 class Config:
-    # Naukri Credentials
+    # Naukri Credentials & Cookie Session
     NAUKRI_EMAIL: str = os.getenv("NAUKRI_EMAIL", "").strip()
     NAUKRI_PASSWORD: str = os.getenv("NAUKRI_PASSWORD", "").strip()
+    NAUKRI_COOKIES: str = os.getenv("NAUKRI_COOKIES", "").strip()
 
     # Telegram Bot
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -33,12 +43,10 @@ class Config:
     def validate(cls) -> list[str]:
         """Validate required configuration parameters."""
         errors = []
-        if not cls.NAUKRI_EMAIL:
-            errors.append("NAUKRI_EMAIL is not set in environment or .env file.")
-        if not cls.NAUKRI_PASSWORD:
-            errors.append("NAUKRI_PASSWORD is not set in environment or .env file.")
+        if not cls.NAUKRI_EMAIL and not cls.NAUKRI_COOKIES:
+            errors.append("Neither NAUKRI_EMAIL nor NAUKRI_COOKIES is set.")
         if not cls.TELEGRAM_BOT_TOKEN:
-            errors.append("TELEGRAM_BOT_TOKEN is not set in environment or .env file.")
+            errors.append("TELEGRAM_BOT_TOKEN is not set.")
         return errors
 
 # Ensure data directory exists safely
