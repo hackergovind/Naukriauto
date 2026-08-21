@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  naukri-bot:
+    build: .
+    container_name: naukri-auto-updater
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TIMEZONE=Asia/Kolkata
+      - HEADLESS=true
