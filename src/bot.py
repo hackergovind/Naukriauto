@@ -80,14 +80,14 @@ class TelegramBot:
         if not target_msg:
             return
 
-        status_msg = await target_msg.reply_text("🔄 *Starting Naukri profile update...*\nConnecting to browser...", parse_mode="Markdown")
+        status_msg = await target_msg.reply_text("🔄 *Updating Naukri profile headline...*", parse_mode="Markdown")
 
         try:
             result = await self.scheduler_mgr.execute_daily_update(is_manual=True)
             if not result["success"]:
                 await status_msg.edit_text(f"❌ *Update failed:*\n{result['message']}", parse_mode="Markdown")
             else:
-                await status_msg.edit_text("✅ *Profile update completed successfully!* Check the report photo above.", parse_mode="Markdown")
+                await status_msg.edit_text("✅ *Profile headline updated successfully!*", parse_mode="Markdown")
         except Exception as e:
             logger.error("Manual update error: {}", e)
             await status_msg.edit_text(f"❌ *Unexpected error:* {str(e)}")
@@ -108,7 +108,7 @@ class TelegramBot:
             "📊 *Naukri Bot Status*\n\n"
             f"👤 *Account:* `{self._mask_email(Config.NAUKRI_EMAIL)}`\n"
             f"🟢 *Scheduler State:* `Running`\n"
-            f"⏰ *Configured Daily Time:* `{Config.DAILY_UPDATE_TIME}` ({Config.TIMEZONE})\n"
+            f"⏰ *Daily Update Time:* `{Config.DAILY_UPDATE_TIME}` ({Config.TIMEZONE})\n"
             f"📅 *Next Scheduled Run:* `{next_run}`\n"
             f"🕒 *Last Execution:* {last_run_str}\n\n"
             "Use /update_now to trigger an immediate update."
@@ -211,7 +211,7 @@ class TelegramBot:
             "🔹 `/logs` - Show recent application logs\n"
             "🔹 `/help` - Show this help message\n\n"
             "💡 *How it works:*\n"
-            "Every day at the scheduled time, the bot securely opens your Naukri profile, "
+            "Every day at 9:00 AM IST, the bot securely communicates with Naukri, "
             "toggles a trailing `.` on your headline, and saves it. This marks your profile as "
             "freshly updated without altering your text meaning, boosting recruiter visibility."
         )
@@ -235,7 +235,7 @@ class TelegramBot:
         elif data == "btn_next_run":
             next_run = self.scheduler_mgr.get_next_run_time()
             await query.message.reply_text(
-                f"⏰ *Next Scheduled Update:*\n`{next_run}`",
+                f"⏰ *Next Scheduled Update:* `{next_run}`",
                 parse_mode="Markdown"
             )
         elif data == "btn_logs":

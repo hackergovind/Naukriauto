@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 from datetime import datetime
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -18,33 +18,24 @@ class SchedulerManager:
     def set_bot_app(self, bot_app):
         self.bot_app = bot_app
 
-    async def notify_users(self, message: str, photo_path: str = None):
-        """Send notification to all allowed telegram users."""
+    async def notify_users(self, message: str):
+        """Send text notification to authorized Telegram users."""
         if not self.bot_app:
             return
         
         for user_id in Config.ALLOWED_TELEGRAM_USER_IDS:
             try:
-                if photo_path and photo_path.endswith(".png"):
-                    with open(photo_path, "rb") as f:
-                        await self.bot_app.bot.send_photo(
-                            chat_id=user_id,
-                            photo=f,
-                            caption=message,
-                            parse_mode="Markdown"
-                        )
-                else:
-                    await self.bot_app.bot.send_message(
-                        chat_id=user_id,
-                        text=message,
-                        parse_mode="Markdown"
-                    )
+                await self.bot_app.bot.send_message(
+                    chat_id=user_id,
+                    text=message,
+                    parse_mode="Markdown"
+                )
             except Exception as e:
                 logger.error("Failed to send Telegram notification to user {}: {}", user_id, e)
 
     async def execute_daily_update(self, is_manual: bool = False) -> dict:
         """Execute the headline update workflow and report status."""
-        trigger_type = "Manual Trigger" if is_manual else "Scheduled Daily Update (09:00 AM)"
+        trigger_type = "Manual Trigger" if is_manual else f"Daily Schedule ({Config.DAILY_UPDATE_TIME})"
         logger.info("Starting Naukri profile update job ({})", trigger_type)
         
         start_time = datetime.now(self.tz)
@@ -59,22 +50,22 @@ class SchedulerManager:
         if result["success"]:
             msg = (
                 f"✅ *Naukri Profile Updated Successfully!*\n\n"
-                f"🕒 *Time:* {self.last_run_status['timestamp']}\n"
-                f"⚡ *Trigger:* {trigger_type}\n\n"
-                f"📝 *Old Headline:*\n{result['old_headline']}\n\n"
-                f"✨ *New Headline:*\n{result['new_headline']}\n\n"
-                f"🚀 Your profile timestamp has been refreshed for recruiters."
+                f"🕒 *Time:* `{self.last_run_status['timestamp']}`\n"
+                f"⚡ *Trigger:* `{trigger_type}`\n\n"
+                f"📝 *Old Headline:*\n`{result['old_headline']}`\n\n"
+                f"✨ *New Headline:*\n`{result['new_headline']}`\n\n"
+                f"🚀 *Status:* Headline timestamp refreshed on Naukri."
             )
         else:
             msg = (
                 f"❌ *Naukri Profile Update Failed!*\n\n"
-                f"🕒 *Time:* {self.last_run_status['timestamp']}\n"
-                f"⚡ *Trigger:* {trigger_type}\n\n"
+                f"🕒 *Time:* `{self.last_run_status['timestamp']}`\n"
+                f"⚡ *Trigger:* `{trigger_type}`\n\n"
                 f"⚠️ *Error:* {result['message']}\n"
-                f"Check logs or update credentials in .env if needed."
+                f"Please check your credentials in `.env` if needed."
             )
 
-        await self.notify_users(msg, result.get("screenshot_path"))
+        await self.notify_users(msg)
         return result
 
     def start(self):
@@ -90,7 +81,7 @@ class SchedulerManager:
         )
         self.scheduler.start()
         logger.info(
-            "Scheduler started. Daily update scheduled for {}:{:02d} ({})",
+            "Scheduler active. Daily update scheduled for {}:{:02d} ({})",
             hour, minute, Config.TIMEZONE
         )
 
