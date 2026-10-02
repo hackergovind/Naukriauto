@@ -67,9 +67,9 @@ class TelegramBot:
         text = (
             "🤖 *Welcome to Naukri Auto Profile Bot!*\n\n"
             "This bot automatically keeps your Naukri profile active by toggling a dot in your headline "
-            "every morning at *9:00 AM IST*, boosting your visibility to recruiters.\n\n"
+            "every day at *9:00 AM & 12:30 PM IST*, boosting your visibility to recruiters.\n\n"
             f"🎯 *Configured Account:* `{self._mask_email(Config.NAUKRI_EMAIL)}`\n"
-            f"⏰ *Daily Schedule:* `{Config.DAILY_UPDATE_TIME}` ({Config.TIMEZONE})\n\n"
+            f"⏰ *Daily Schedules:* `{','.join(Config.get_schedule_times())}` ({Config.TIMEZONE})\n\n"
             "Choose an action below to get started:"
         )
         await update.message.reply_text(text, reply_markup=self._get_main_keyboard(), parse_mode="Markdown")
@@ -111,7 +111,7 @@ class TelegramBot:
             "📊 *Naukri Bot Status*\n\n"
             f"👤 *Account:* `{self._mask_email(Config.NAUKRI_EMAIL)}`\n"
             f"🟢 *Scheduler State:* `Running`\n"
-            f"⏰ *Daily Update Time:* `{Config.DAILY_UPDATE_TIME}` ({Config.TIMEZONE})\n"
+            f"⏰ *Daily Update Times:* `{','.join(Config.get_schedule_times())}` ({Config.TIMEZONE})\n"
             f"📅 *Next Scheduled Run:* `{next_run}`\n"
             f"🕒 *Last Execution:* {last_run_str}\n\n"
             "Use /update_now to trigger an immediate update."
@@ -140,6 +140,31 @@ class TelegramBot:
             )
         else:
             await status_msg.edit_text(f"⚠️ *Could not fetch headline:* {res['message']}")
+
+    async def set_headline_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """One-time seed of the tracked base headline (email+password mode)."""
+        user_id = update.effective_user.id
+        if not self._is_user_authorized(user_id):
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "📝 *Usage:* `/set_headline <your current headline>`\n\n"
+                "Copy it exactly from `naukri.com/mnjuser/profile`.\n"
+                "One-time setup — the bot then toggles `.` at 09:00 & 12:30 automatically.",
+                parse_mode="Markdown",
+            )
+            return
+
+        text = " ".join(context.args).strip()
+        try:
+            base = self.scheduler_mgr.client.set_base_headline(text)
+            await update.message.reply_text(
+                f"✅ *Base headline saved:*\n`{base}`\n\nNow run `/update_now` to test the dot toggle.",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ *Failed:* {e}")
 
     async def set_cookie_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -184,16 +209,17 @@ class TelegramBot:
 
         if not context.args or len(context.args) == 0:
             await update.message.reply_text(
-                "⚠️ *Usage:* `/set_time HH:MM` (e.g. `/set_time 09:00` or `/set_time 14:30`)",
+                "⚠️ *Usage:* `/set_time HH:MM` (e.g. `/set_time 09:00`)\n"
+                "For two daily runs: `/set_time 09:00,12:30`",
                 parse_mode="Markdown"
             )
             return
 
-        time_val = context.args[0].strip()
+        time_val = ",".join(context.args).replace(" ", "").strip()
         success = self.scheduler_mgr.update_schedule_time(time_val)
         if success:
             await update.message.reply_text(
-                f"✅ *Daily update schedule updated to:* `{Config.DAILY_UPDATE_TIME}` ({Config.TIMEZONE})\n"
+                f"✅ *Daily update schedule updated to:* `{','.join(Config.get_schedule_times())}` ({Config.TIMEZONE})\n"
                 f"📅 *Next Run:* `{self.scheduler_mgr.get_next_run_time()}`",
                 parse_mode="Markdown"
             )
@@ -245,13 +271,14 @@ class TelegramBot:
             "🔹 `/start` - Open main dashboard & control panel\n"
             "🔹 `/update_now` - Trigger immediate headline update\n"
             "🔹 `/status` - View scheduler status & next run time\n"
-            "🔹 `/headline` - Fetch current headline from Naukri\n"
-            "🔹 `/set_cookie <cookie>` - Set browser session cookies\n"
+            "🔹 `/headline` - Show tracked headline + profile freshness\n"
+            "🔹 `/set_headline <text>` - One-time: set your base headline (email mode)\n"
+            "🔹 `/set_cookie <cookie>` - Set browser session cookies (fallback)\n"
             "🔹 `/set_time <HH:MM>` - Change daily schedule time (24-hr format)\n"
             "🔹 `/logs` - Show recent application logs\n"
             "🔹 `/help` - Show this help message\n\n"
             "💡 *How it works:*\n"
-            "Every day at 9:00 AM IST, the bot securely communicates with Naukri, "
+            "Every day at 9:00 AM & 12:30 PM IST, the bot logs in with your email+password, "
             "toggles a trailing `.` on your headline, and saves it. This marks your profile as "
             "freshly updated without altering your text meaning, boosting recruiter visibility."
         )
@@ -294,6 +321,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("update_now", self.update_now_cmd))
         self.app.add_handler(CommandHandler("status", self.status_cmd))
         self.app.add_handler(CommandHandler("headline", self.headline_cmd))
+        self.app.add_handler(CommandHandler("set_headline", self.set_headline_cmd))
         self.app.add_handler(CommandHandler("set_cookie", self.set_cookie_cmd))
         self.app.add_handler(CommandHandler("set_time", self.set_time_cmd))
         self.app.add_handler(CommandHandler("logs", self.logs_cmd))

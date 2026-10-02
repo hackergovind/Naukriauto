@@ -1,0 +1,41 @@
+name: Naukri Profile Auto-Update
+
+# 09:00 + 12:30 IST = 03:30 + 07:00 UTC (GitHub cron is UTC)
+on:
+  schedule:
+    - cron: "30 3,7 * * *"
+  workflow_dispatch:  # manual "Run workflow" button
+
+permissions:
+  contents: write  # needed to commit the dot-toggle state back
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Toggle headline dot (refreshes Naukri timestamp)
+        env:
+          NAUKRI_EMAIL: ${{ secrets.NAUKRI_EMAIL }}
+          NAUKRI_PASSWORD: ${{ secrets.NAUKRI_PASSWORD }}
+          BASE_HEADLINE: ${{ secrets.BASE_HEADLINE }}
+          DAILY_UPDATE_TIMES: "09:00,12:30"
+          TIMEZONE: Asia/Kolkata
+        run: python main.py --update-now
+
+      # Runners are ephemeral: save the toggle state so the next run flips the other way.
+      # (session.json stays gitignored — each run logs in fresh.)
+      - name: Persist toggle state
+        run: |
+          git config user.name "naukri-auto-bot"
+          git config user.email "naukri-auto-bot@users.noreply.github.com"
+          git add data/headline_state.json
+          git diff --cached --quiet || (git commit -m "chore: persist headline toggle state [skip ci]" && git push)

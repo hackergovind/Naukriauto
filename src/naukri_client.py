@@ -1,32 +1,57 @@
-﻿import asyncio
+﻿"""Naukri API client — lightweight, no browser (good for basic CLI servers).
+
+Uses curl-cffi with Chrome TLS impersonation to bypass Akamai fingerprinting,
+so plain email+password login works without Playwright/Selenium.
+
+Endpoints (verified working pattern, incl. NopeRi July-2026):
+  LOGIN:    POST https://www.naukri.com/central-login-services/v1/login
+            headers: appid=105, clientid=d3skt0p, systemid=jobseeker
+            json: {"username": email, "password": password}
+            token: cookie "nauk_at" (Bearer)
+  DASHBOARD: GET https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v0/users/self/dashboard
+  UPDATE:   POST https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v1/users/self/fullprofiles
+            headers: Authorization Bearer, systemid=Naukri, x-http-method-override=PUT
+            json: {"profile": {"resumeHeadline": ...}, "profileId": ...}
+"""
+import asyncio
 import json
-import re
 from pathlib import Path
 from typing import Optional, Dict, Any
-import httpx
-from bs4 import BeautifulSoup
+
 from src.config import Config, logger
+
+LOGIN_URL = "https://www.naukri.com/central-login-services/v1/login"
+DASHBOARD_URL = "https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v0/users/self/dashboard"
+PROFILE_UPDATE_URL = "https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v1/users/self/fullprofiles"
+
+LOGIN_HEADERS = {
+    "accept": "application/json",
+    "appid": "105",
+    "clientid": "d3skt0p",
+    "content-type": "application/json",
+    "referer": "https://www.naukri.com/nlogin/login",
+    "systemid": "jobseeker",
+    "x-requested-with": "XMLHttpRequest",
+    "user-agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+}
+
+
+def _make_session():
+    """Chrome-impersonating sync session (bypasses Akamai TLS fingerprint)."""
+    from curl_cffi import requests as crequests
+    return crequests.Session(impersonate="chrome124", timeout=30)
+
 
 class NaukriClient:
     def __init__(self):
         self.session_file = Config.SESSION_FILE_PATH
         self.auth_token: Optional[str] = None
-        self.base_headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Appid": "106",
-            "Systemid": "106",
-            "Clientid": "d301720d52264e63bb1326396001e4f3",
-            "Origin": "https://www.naukri.com",
-            "Referer": "https://www.naukri.com/mnjuser/profile"
-        }
 
+    # ---------- session persistence ----------
     def _parse_cookie_string(self, cookie_str: str) -> dict:
-        """Parse raw Cookie header string into dictionary."""
         cookies = {}
         if not cookie_str:
             return cookies
@@ -38,13 +63,11 @@ class NaukriClient:
         return cookies
 
     def _load_saved_session(self) -> tuple[dict, Optional[str]]:
-        """Load saved cookies and auth token safely."""
-        # Check if cookies specified in config env
         if Config.NAUKRI_COOKIES:
             env_cookies = self._parse_cookie_string(Config.NAUKRI_COOKIES)
             if env_cookies:
-                return env_cookies, None
-
+                token = env_cookies.get("nauk_at")
+                return env_cookies, token
         if self.session_file.exists():
             try:
                 with open(self.session_file, "r", encoding="utf-8") as f:
@@ -53,278 +76,310 @@ class NaukriClient:
                         cookies = data.get("cookies", data)
                         token = data.get("token")
                         if isinstance(cookies, dict):
+                            if not token:
+                                token = cookies.get("nauk_at")
                             return cookies, token
             except Exception as e:
                 logger.warning("Failed to load saved session: {}", e)
         return {}, None
 
-    def _extract_cookies_safely(self, client: httpx.AsyncClient) -> dict:
-        """Extract cookies from client.cookies.jar safely."""
-        cookies = {}
-        try:
-            for cookie in client.cookies.jar:
-                cookies[cookie.name] = cookie.value
-        except Exception:
-            pass
-        return cookies
-
     def save_raw_cookie_string(self, raw_cookie_str: str) -> bool:
-        """Save a new cookie string provided by user via Telegram command."""
         cookies = self._parse_cookie_string(raw_cookie_str)
         if not cookies:
             return False
-        self._save_session(cookies)
+        token = cookies.get("nauk_at")
+        if token:
+            self.auth_token = token
+        self._save_session(cookies, self.auth_token)
         return True
 
     def _save_session(self, cookies: dict, token: Optional[str] = None):
-        """Save session cookies and token to session.json."""
         try:
             Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-            payload = {
-                "cookies": cookies,
-                "token": token or self.auth_token
-            }
+            payload = {"cookies": cookies, "token": token or self.auth_token}
             with open(self.session_file, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
-            logger.info("Saved updated session to {}", self.session_file)
+            logger.info("Saved session ({} cookies) to {}", len(cookies), self.session_file)
         except Exception as e:
             logger.warning("Could not save session: {}", e)
 
-    def _get_auth_headers(self) -> dict:
-        headers = dict(self.base_headers)
+    def _auth_headers(self) -> dict:
+        h = dict(LOGIN_HEADERS)
         if self.auth_token:
-            token_val = self.auth_token if self.auth_token.startswith("Bearer ") else f"Bearer {self.auth_token}"
-            headers["Authorization"] = token_val
-            headers["X-Token"] = self.auth_token
-        return headers
+            h["authorization"] = f"Bearer {self.auth_token}"
+            h["systemid"] = "Naukri"
+        return h
 
-    async def _login(self, client: httpx.AsyncClient) -> bool:
-        """Perform login to Naukri using credentials."""
-        logger.info("Attempting automated login for: {}", Config.NAUKRI_EMAIL)
-        
-        # Step 1: Pre-fetch cookies / CSRF
-        try:
-            await client.get("https://www.naukri.com/nlogin/login", headers=self.base_headers, timeout=15.0)
-        except Exception:
-            pass
-
-        # Step 2: Test central login & loginapi endpoints
-        login_targets = [
-            {
-                "url": "https://www.naukri.com/central-login-services/v1/login",
-                "json": {"username": Config.NAUKRI_EMAIL, "password": Config.NAUKRI_PASSWORD}
-            },
-            {
-                "url": "https://www.naukri.com/loginapi/v5/login",
-                "data": {"USERNAME": Config.NAUKRI_EMAIL, "PASSWORD": Config.NAUKRI_PASSWORD, "ISLOGINBYEMAIL": "1"}
-            },
-            {
-                "url": "https://www.naukri.com/nlogin/login",
-                "data": {"username": Config.NAUKRI_EMAIL, "password": Config.NAUKRI_PASSWORD}
-            }
-        ]
-
-        login_success = False
-        last_error = ""
-
-        for target in login_targets:
+    # ---------- blocking I/O (run in thread) ----------
+    def _do_login_blocking(self) -> tuple[dict, str]:
+        """POST login, return (cookies, nauk_at). Raises on failure."""
+        if not Config.NAUKRI_EMAIL or not Config.NAUKRI_PASSWORD:
+            raise Exception("NAUKRI_EMAIL / NAUKRI_PASSWORD not set in .env.")
+        s = _make_session()
+        resp = s.post(
+            LOGIN_URL,
+            headers=LOGIN_HEADERS,
+            json={"username": Config.NAUKRI_EMAIL, "password": Config.NAUKRI_PASSWORD},
+        )
+        logger.info("Login API returned HTTP {}", resp.status_code)
+        if resp.status_code == 401:
+            raise Exception("Invalid email/password (401).")
+        if resp.status_code in (400, 403, 429):
+            body = (resp.text or "")[:200]
+            raise Exception(f"Login rejected (HTTP {resp.status_code}). Blocked IP/captcha? {body}")
+        if not resp.ok:
+            raise Exception(f"Login failed HTTP {resp.status_code}: {(resp.text or '')[:200]}")
+        cookies = {c.name: c.value for c in s.cookies.jar} if hasattr(s.cookies, "jar") else dict(s.cookies)
+        # curl_cffi cookies may expose via .get
+        token = s.cookies.get("nauk_at") if hasattr(s.cookies, "get") else cookies.get("nauk_at")
+        if not token:
+            token = cookies.get("nauk_at")
+        if not token:
+            # Some flows put token in JSON
             try:
-                h = dict(self.base_headers)
-                if "json" in target:
-                    h["Content-Type"] = "application/json"
-                    resp = await client.post(target["url"], json=target["json"], headers=h, timeout=20.0)
-                else:
-                    h["Content-Type"] = "application/x-www-form-urlencoded"
-                    resp = await client.post(target["url"], data=target["data"], headers=h, timeout=20.0)
+                token = resp.json().get("token") or resp.json().get("authToken")
+            except Exception:
+                pass
+        if not token:
+            raise Exception("Login OK but no nauk_at token — MFA/captcha may be required. Try login from this IP in browser once.")
+        return cookies, token
 
-                logger.info("Login attempt to {} returned HTTP {}", target["url"], resp.status_code)
+    def _newauthed_session(self, cookies: dict):
+        s = _make_session()
+        for k, v in cookies.items():
+            try:
+                s.cookies.set(k, v, domain=".naukri.com")
+            except Exception:
+                try:
+                    s.cookies.set(k, v)
+                except Exception:
+                    pass
+        return s
 
-                if resp.status_code in (200, 201):
-                    try:
-                        data = resp.json()
-                        token = data.get("token") or data.get("accessToken") or data.get("data", {}).get("token")
-                        if token:
-                            self.auth_token = token
-                    except Exception:
-                        pass
-                    login_success = True
-                    break
-                elif resp.status_code in (301, 302, 303):
-                    login_success = True
-                    break
-                else:
-                    last_error = f"HTTP {resp.status_code} ({resp.text[:100]})"
-            except Exception as ex:
-                last_error = str(ex)
-                continue
+    # ---------- headline state (Naukri offers no lightweight headline READ api;
+    # profile HTML is a JS shell, so we track the dot-toggle locally) ----------
+    def get_headline_state(self) -> dict:
+        """Return {'base': str, 'last_dot': bool}. Base seeded from BASE_HEADLINE env or /set_headline."""
+        state = {"base": "", "last_dot": False}
+        p = Config.HEADLINE_STATE_PATH
+        if p.exists():
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                    if isinstance(saved, dict):
+                        if saved.get("base"):
+                            state["base"] = str(saved["base"]).strip()
+                        state["last_dot"] = bool(saved.get("last_dot", False))
+            except Exception as e:
+                logger.warning("Could not read headline state: {}", e)
+        if not state["base"] and Config.BASE_HEADLINE:
+            state["base"] = Config.BASE_HEADLINE.strip().rstrip(".").strip()
+        return state
 
-        if not login_success:
-            raise Exception(f"Automated login blocked by Naukri/Akamai anti-bot. Please use Telegram /set_cookie or set NAUKRI_COOKIES in .env. Details: {last_error}")
+    def set_base_headline(self, headline: str) -> str:
+        """Seed/overwrite tracked base headline. Returns normalized base."""
+        base = (headline or "").strip().rstrip(".").strip()
+        if not base:
+            raise ValueError("Headline is empty.")
+        try:
+            Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+            with open(Config.HEADLINE_STATE_PATH, "w", encoding="utf-8") as f:
+                json.dump({"base": base, "last_dot": False}, f, indent=2)
+        except Exception as e:
+            logger.warning("Could not save headline state: {}", e)
+        logger.info("Base headline set to: '{}'", base)
+        return base
 
-        saved_cookies = self._extract_cookies_safely(client)
-        self._save_session(saved_cookies, self.auth_token)
-        logger.info("Login succeeded.")
-        return True
+    def _save_headline_state(self, base: str, last_dot: bool):
+        try:
+            Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+            with open(Config.HEADLINE_STATE_PATH, "w", encoding="utf-8") as f:
+                json.dump({"base": base, "last_dot": last_dot}, f, indent=2)
+        except Exception as e:
+            logger.warning("Could not save headline state: {}", e)
+
+    def _do_get_mod_dt_blocking(self, cookies: dict, token: Optional[str]) -> Optional[str]:
+        """Dashboard mod_dt = profile last-modified timestamp. Used to verify updates."""
+        try:
+            s = self._newauthed_session(cookies)
+            headers = dict(LOGIN_HEADERS)
+            if token:
+                headers["authorization"] = f"Bearer {token}"
+                headers["systemid"] = "Naukri"
+            r = s.get(DASHBOARD_URL, headers=headers)
+            if r.status_code == 401:
+                return "EXPIRED"
+            if r.ok:
+                d = r.json()
+                return d.get("dashBoard", {}).get("mod_dt")
+        except Exception as e:
+            logger.debug("mod_dt fetch failed: {}", e)
+        return None
+
+    def _do_update_headline_blocking(self, cookies: dict, token: Optional[str], new_headline: str) -> Dict[str, Any]:
+        s = self._newauthed_session(cookies)
+        headers = dict(LOGIN_HEADERS)
+        if token:
+            headers["authorization"] = f"Bearer {token}"
+        headers.update({
+            "origin": "https://www.naukri.com",
+            "referer": "https://www.naukri.com/mnjuser/profile?id=&altresid",
+            "systemid": "105",
+            "x-http-method-override": "PUT",
+            "x-requested-with": "XMLHttpRequest",
+        })
+
+        # Need profileId
+        pid = None
+        try:
+            r = s.get(DASHBOARD_URL, headers=headers)
+            if r.status_code == 401:
+                return {"success": False, "message": "Session expired (401). Will re-login."}
+            if r.ok:
+                d = r.json()
+                pid = d.get("profileId") or d.get("dashBoard", {}).get("profileId")
+        except Exception as e:
+            logger.debug("Dashboard for profileId failed: {}", e)
+        if not pid:
+            return {"success": False, "message": "Could not get profileId from dashboard."}
+
+        headers["systemid"] = "105"
+        payload = {"profile": {"resumeHeadline": new_headline}, "profileId": pid}
+        r = s.post(PROFILE_UPDATE_URL, headers=headers, json=payload)
+        logger.info("Profile update returned HTTP {}", r.status_code)
+        if r.ok:
+            try:
+                body = r.json()
+                if body.get("status") is False or body.get("success") is False:
+                    return {"success": False, "message": f"Naukri rejected update: {str(body)[:200]}"}
+            except Exception:
+                pass
+            fresh_cookies = {c.name: c.value for c in s.cookies.jar} if hasattr(s.cookies, "jar") else dict(s.cookies)
+            return {"success": True, "message": "Updated.", "cookies": fresh_cookies}
+        if r.status_code == 401:
+            return {"success": False, "message": "Session expired (401). Will re-login."}
+        return {"success": False, "message": f"Update failed HTTP {r.status_code}: {(r.text or '')[:200]}"}
+
+    # ---------- async public API (same signatures as before) ----------
+    async def _ensure_login(self, cookies: dict, token: Optional[str]) -> tuple[dict, str]:
+        if token and cookies.get("nauk_at"):
+            self.auth_token = token
+            return cookies, token
+        logger.info("No valid session, logging in with email+password...")
+        new_cookies, new_token = await asyncio.to_thread(self._do_login_blocking)
+        self.auth_token = new_token
+        self._save_session(new_cookies, new_token)
+        return new_cookies, new_token
 
     async def get_current_headline(self) -> Dict[str, Any]:
-        """Fetch current resume headline from Naukri."""
-        result = {"success": False, "headline": "", "message": ""}
-        saved_cookies, saved_token = self._load_saved_session()
-        self.auth_token = saved_token
+        """Return tracked headline + live profile freshness (mod_dt from dashboard).
 
-        async with httpx.AsyncClient(cookies=saved_cookies, follow_redirects=True) as client:
-            headers = self._get_auth_headers()
-            
-            # 1. API endpoint
-            try:
-                resp = await client.get("https://www.naukri.com/gateway/v1/profiles/userProfile", headers=headers, timeout=20.0)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    h = data.get("profile", {}).get("resumeHeadline") or data.get("resumeHeadline") or data.get("data", {}).get("resumeHeadline")
-                    if h:
-                        result["headline"] = h.strip()
-                        result["success"] = True
-                        result["message"] = "Fetched successfully."
-                        return result
-            except Exception:
-                pass
-
-            # 2. Web Profile HTML
-            try:
-                resp = await client.get("https://www.naukri.com/mnjuser/profile", headers=headers, timeout=20.0)
-                if "nlogin" in str(resp.url):
-                    if Config.NAUKRI_EMAIL and Config.NAUKRI_PASSWORD:
-                        await self._login(client)
-                        headers = self._get_auth_headers()
-                        resp = await client.get("https://www.naukri.com/mnjuser/profile", headers=headers, timeout=20.0)
-
-                soup = BeautifulSoup(resp.text, "html.parser")
-                el = soup.select_one(".resumeHeadline .msg, .resumeHeadline .widgetCont, div.resumeHeadlineTxt, textarea#resumeHeadlineTxt")
-                if el:
-                    result["headline"] = (el.get_text(strip=True) or el.get("value", "")).strip()
-                    result["success"] = True
-                    result["message"] = "Fetched successfully."
-                    return result
-                else:
-                    result["message"] = "Could not locate headline container (Login session may be required)."
-            except Exception as e:
-                result["message"] = str(e)
-
-        return result
+        Note: Naukri's profile HTML is a JS shell and offers no lightweight
+        headline-read API, so the headline text itself is tracked locally
+        (seeded once via BASE_HEADLINE / /set_headline). Login + mod_dt prove
+        the session is live.
+        """
+        result: Dict[str, Any] = {"success": False, "headline": "", "message": ""}
+        cookies, token = self._load_saved_session()
+        if token:
+            self.auth_token = token
+        try:
+            cookies, token = await self._ensure_login(cookies, token)
+            state = self.get_headline_state()
+            mod_dt = await asyncio.to_thread(self._do_get_mod_dt_blocking, cookies, token)
+            if mod_dt == "EXPIRED":
+                cookies, token = await self._ensure_login({}, None)
+                mod_dt = await asyncio.to_thread(self._do_get_mod_dt_blocking, cookies, token)
+            if not state["base"]:
+                result["message"] = (
+                    "Login works, but base headline is not set yet. "
+                    "Copy your headline from naukri.com/mnjuser/profile and run: "
+                    "/set_headline <your headline> (or set BASE_HEADLINE in .env)."
+                )
+                return result
+            current = state["base"] + ("." if state["last_dot"] else "")
+            result["success"] = True
+            result["headline"] = current
+            result["message"] = f"Tracked headline. Profile last modified: {mod_dt or 'unknown'}."
+            return result
+        except Exception as e:
+            result["message"] = str(e)
+            logger.error("get_current_headline failed: {}", e)
+            return result
 
     async def update_profile_headline(self, custom_headline: Optional[str] = None) -> Dict[str, Any]:
-        """Updates Naukri profile headline by toggling a dot (or setting custom headline)."""
-        result = {
-            "success": False,
-            "old_headline": "",
-            "new_headline": "",
-            "message": ""
-        }
+        """Toggle trailing dot using locally tracked state, verify via mod_dt bump."""
+        result: Dict[str, Any] = {"success": False, "old_headline": "", "new_headline": "", "message": ""}
+        cookies, token = self._load_saved_session()
+        if token:
+            self.auth_token = token
+        try:
+            # 1) Ensure logged in
+            cookies, token = await self._ensure_login(cookies, token)
 
-        saved_cookies, saved_token = self._load_saved_session()
-        self.auth_token = saved_token
-
-        async with httpx.AsyncClient(cookies=saved_cookies, follow_redirects=True) as client:
-            headers = self._get_auth_headers()
-            
-            # Step 1: Check session validity
-            logger.info("Checking session validity...")
-            check_resp = None
-            try:
-                check_resp = await client.get("https://www.naukri.com/mnjuser/profile", headers=headers, timeout=15.0)
-            except Exception:
-                pass
-
-            if not check_resp or "nlogin" in str(check_resp.url):
-                if Config.NAUKRI_EMAIL and Config.NAUKRI_PASSWORD:
-                    logger.info("Session invalid. Trying login...")
-                    await self._login(client)
-                    headers = self._get_auth_headers()
-                    check_resp = await client.get("https://www.naukri.com/mnjuser/profile", headers=headers, timeout=15.0)
-                else:
-                    raise Exception("No active session found. Please send your session cookie using /set_cookie or set NAUKRI_COOKIES in .env.")
-
-            # Step 2: Get current headline
-            current_headline = ""
-            if check_resp and check_resp.status_code == 200 and "nlogin" not in str(check_resp.url):
-                soup = BeautifulSoup(check_resp.text, "html.parser")
-                el = soup.select_one(".resumeHeadline .msg, .resumeHeadline .widgetCont, div.resumeHeadlineTxt, textarea#resumeHeadlineTxt")
-                if el:
-                    current_headline = el.get_text(strip=True) or el.get("value", "")
-
-            current_headline = current_headline.strip() if current_headline else "Experienced Software Professional"
-            result["old_headline"] = current_headline
-
-            # Step 3: Compute new headline (Toggle dot)
+            # 2) Determine old -> new from tracked state (never guess/overwrite blindly)
+            state = self.get_headline_state()
             if custom_headline:
+                base = custom_headline.strip().rstrip(".").strip()
+                if not base:
+                    result["message"] = "Custom headline is empty."
+                    return result
+                old_headline = state["base"] + ("." if state.get("last_dot") else "") if state["base"] else base
                 new_headline = custom_headline.strip()
+                new_last_dot = new_headline.endswith(".")
+                base = new_headline.rstrip(".").strip()
             else:
-                if current_headline.endswith("."):
-                    new_headline = current_headline[:-1].rstrip()
-                else:
-                    new_headline = f"{current_headline}."
-
+                base = state["base"]
+                if not base:
+                    result["message"] = (
+                        "Base headline is not set — refusing to overwrite your profile with a guess. "
+                        "Copy your headline from naukri.com/mnjuser/profile and run: "
+                        "/set_headline <your headline> (or set BASE_HEADLINE in .env), then retry."
+                    )
+                    return result
+                old_headline = base + ("." if state["last_dot"] else "")
+                new_last_dot = not state["last_dot"]
+                new_headline = base + ("." if new_last_dot else "")
+            result["old_headline"] = old_headline
             result["new_headline"] = new_headline
-            logger.info("Current headline: '{}' | New headline: '{}'", current_headline, new_headline)
+            logger.info("Headline: '{}' -> '{}'", old_headline, new_headline)
 
-            # Step 4: Submit Headline update
-            update_targets = [
-                {
-                    "url": "https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v1/users/self/profiles",
-                    "method": "POST",
-                    "json": {"resumeHeadline": new_headline}
-                },
-                {
-                    "url": "https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v0/users/self/profiles",
-                    "method": "POST",
-                    "json": {"resumeHeadline": new_headline}
-                },
-                {
-                    "url": "https://www.naukri.com/gateway/v1/profiles/userProfile/resume-headline",
-                    "method": "POST",
-                    "json": {"resumeHeadline": new_headline}
-                },
-                {
-                    "url": "https://www.naukri.com/mnjuser/profile",
-                    "method": "POST",
-                    "data": {"resumeHeadline": new_headline}
-                }
-            ]
+            # 3) Snapshot mod_dt before
+            mod_before = await asyncio.to_thread(self._do_get_mod_dt_blocking, cookies, token)
 
-            update_success = False
-            last_err = ""
-
-            for target in update_targets:
-                try:
-                    up_headers = dict(headers)
-                    if "json" in target:
-                        up_headers["Content-Type"] = "application/json"
-                        if target["method"] == "POST":
-                            r = await client.post(target["url"], json=target["json"], headers=up_headers, timeout=20.0)
-                        else:
-                            r = await client.put(target["url"], json=target["json"], headers=up_headers, timeout=20.0)
-                    else:
-                        up_headers["Content-Type"] = "application/x-www-form-urlencoded"
-                        r = await client.post(target["url"], data=target["data"], headers=up_headers, timeout=20.0)
-
-                    logger.info("Update headline on {} returned HTTP {}", target["url"], r.status_code)
-                    if r.status_code in (200, 201, 204):
-                        update_success = True
-                        break
-                    else:
-                        last_err = f"HTTP {r.status_code}"
-                except Exception as e:
-                    last_err = str(e)
-                    continue
-
-            saved_cookies = self._extract_cookies_safely(client)
-            self._save_session(saved_cookies, self.auth_token)
-
-            if update_success:
-                result["success"] = True
-                result["message"] = f"Headline successfully updated from:\n`{current_headline}`\nto:\n`{new_headline}`"
+            # 4) Update (retry once with fresh login on expiry)
+            upd = await asyncio.to_thread(self._do_update_headline_blocking, cookies, token, new_headline)
+            if not upd.get("success") and "expired" in upd.get("message", "").lower():
+                cookies, token = await self._ensure_login({}, None)
+                mod_before = await asyncio.to_thread(self._do_get_mod_dt_blocking, cookies, token)
+                upd = await asyncio.to_thread(self._do_update_headline_blocking, cookies, token, new_headline)
+            if not upd.get("success"):
+                result["message"] = upd.get("message", "Update failed.")
+                return result
+            if upd.get("cookies"):
+                self._save_session(upd["cookies"], token)
             else:
-                result["success"] = False
-                result["message"] = f"Update request returned {last_err}. If session expired, please refresh cookies via /set_cookie."
+                self._save_session(cookies, token)
 
-        return result
+            # 5) Verify: mod_dt should bump to now
+            await asyncio.sleep(2)
+            mod_after = await asyncio.to_thread(
+                self._do_get_mod_dt_blocking, upd.get("cookies", cookies), token
+            )
+            self._save_headline_state(base, new_last_dot)
+            result["success"] = True
+            if mod_after and mod_after != mod_before:
+                result["message"] = (
+                    f"Headline updated:\n`{old_headline}`\nto:\n`{new_headline}`\n"
+                    f"Verified: profile modified {mod_before} -> {mod_after}."
+                )
+            else:
+                result["message"] = (
+                    f"Headline update accepted (HTTP 200):\n`{old_headline}`\nto:\n`{new_headline}`."
+                    + ("" if mod_after else " Could not re-read mod_dt for verification.")
+                )
+            return result
+        except Exception as e:
+            result["message"] = str(e)
+            logger.error("update_profile_headline failed: {}", e)
+            return result

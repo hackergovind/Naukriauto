@@ -1,0 +1,17 @@
+[Unit]
+Description=Naukri Auto Profile Updater (9AM + 12:30PM IST, email login)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/naukriauto
+ExecStart=/opt/naukriauto/venv/bin/python /opt/naukriauto/main.py --no-bot
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+# .env file in /opt/naukriauto/.env holds NAUKRI_EMAIL, NAUKRI_PASSWORD
+
+[Install]
+WantedBy=multi-user.target

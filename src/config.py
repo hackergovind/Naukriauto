@@ -30,11 +30,41 @@ class Config:
         int(uid.strip()) for uid in _allowed_users_raw.split(",") if uid.strip().isdigit()
     ]
 
-    # Scheduling
+    # Scheduling - supports single time (DAILY_UPDATE_TIME=09:00)
+    # or multiple times comma-separated (DAILY_UPDATE_TIMES=09:00,12:30)
     DAILY_UPDATE_TIME: str = os.getenv("DAILY_UPDATE_TIME", "09:00").strip()
+    DAILY_UPDATE_TIMES_RAW: str = os.getenv("DAILY_UPDATE_TIMES", "").strip()
     TIMEZONE: str = os.getenv("TIMEZONE", "Asia/Kolkata").strip()
 
-    # File Paths
+    @classmethod
+    def get_schedule_times(cls) -> list[str]:
+        """Return list of HH:MM schedule times (supports 09:00 + 12:30)."""
+        raw = cls.DAILY_UPDATE_TIMES_RAW or cls.DAILY_UPDATE_TIME or "09:00"
+        times: list[str] = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                h, m = part.split(":")
+                hi, mi = int(h), int(m)
+                if 0 <= hi <= 23 and 0 <= mi <= 59:
+                    times.append(f"{hi:02d}:{mi:02d}")
+            except ValueError:
+                continue
+        # Deduplicate preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for t in times:
+            if t not in seen:
+                seen.add(t)
+                unique.append(t)
+        return unique or ["09:00"]
+
+    # Headline tracking (Naukri has no lightweight read API without a browser,
+    # so we track the dot-toggle state locally; seeded once from your real headline)
+    BASE_HEADLINE: str = os.getenv("BASE_HEADLINE", "").strip()
+    HEADLINE_STATE_PATH: Path = BASE_DIR / "data" / "headline_state.json"
     SESSION_FILE_PATH: Path = BASE_DIR / "data" / "session.json"
     LOG_FILE_PATH: Path = BASE_DIR / "data" / "app.log"
     DATA_DIR: Path = BASE_DIR / "data"
