@@ -12,8 +12,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN mkdir -p data
+RUN mkdir -p data \
+    && useradd --create-home --shell /usr/sbin/nologin appuser \
+    && chown -R appuser:appuser /app
 
 ENV TIMEZONE=Asia/Kolkata
+
+USER appuser
 
 CMD ["python", "main.py"]

@@ -15,10 +15,11 @@ Endpoints (verified working pattern, incl. NopeRi July-2026):
 """
 import asyncio
 import json
-from pathlib import Path
 from typing import Optional, Dict, Any
 
-from src.config import Config, logger
+from src.config import Config, logger, redact_secrets, write_secure_json
+
+MAX_HEADLINE_LEN = 500
 
 LOGIN_URL = "https://www.naukri.com/central-login-services/v1/login"
 DASHBOARD_URL = "https://www.naukri.com/cloudgateway-mynaukri/resman-aggregator-services/v0/users/self/dashboard"
@@ -70,20 +71,25 @@ class NaukriClient:
                 return env_cookies, token
         if self.session_file.exists():
             try:
-                with open(self.session_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        cookies = data.get("cookies", data)
-                        token = data.get("token")
-                        if isinstance(cookies, dict):
-                            if not token:
-                                token = cookies.get("nauk_at")
-                            return cookies, token
+                raw = self.session_file.read_bytes()
+                if len(raw) > 1024 * 1024:
+                    logger.warning("Saved session file suspiciously large ({} bytes), ignoring.", len(raw))
+                    return {}, None
+                data = json.loads(raw.decode("utf-8"))
+                if isinstance(data, dict):
+                    cookies = data.get("cookies", data)
+                    token = data.get("token")
+                    if isinstance(cookies, dict):
+                        if not token:
+                            token = cookies.get("nauk_at")
+                        return cookies, token
             except Exception as e:
-                logger.warning("Failed to load saved session: {}", e)
+                logger.warning("Failed to load saved session: {}", redact_secrets(str(e)))
         return {}, None
 
     def save_raw_cookie_string(self, raw_cookie_str: str) -> bool:
+        if not raw_cookie_str or len(raw_cookie_str) > 8192:
+            return False
         cookies = self._parse_cookie_string(raw_cookie_str)
         if not cookies:
             return False
@@ -95,13 +101,11 @@ class NaukriClient:
 
     def _save_session(self, cookies: dict, token: Optional[str] = None):
         try:
-            Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
             payload = {"cookies": cookies, "token": token or self.auth_token}
-            with open(self.session_file, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2)
+            write_secure_json(self.session_file, payload)
             logger.info("Saved session ({} cookies) to {}", len(cookies), self.session_file)
         except Exception as e:
-            logger.warning("Could not save session: {}", e)
+            logger.warning("Could not save session: {}", redact_secrets(str(e)))
 
     def _auth_headers(self) -> dict:
         h = dict(LOGIN_HEADERS)
@@ -125,10 +129,12 @@ class NaukriClient:
         if resp.status_code == 401:
             raise Exception("Invalid email/password (401).")
         if resp.status_code in (400, 403, 429):
-            body = (resp.text or "")[:200]
-            raise Exception(f"Login rejected (HTTP {resp.status_code}). Blocked IP/captcha? {body}")
+            # Log upstream body redacted server-side only; never return it to chat.
+            logger.warning("Login rejected (HTTP {}): {}", resp.status_code, redact_secrets((resp.text or "")[:200]))
+            raise Exception(f"Login rejected (HTTP {resp.status_code}). Blocked IP/captcha?")
         if not resp.ok:
-            raise Exception(f"Login failed HTTP {resp.status_code}: {(resp.text or '')[:200]}")
+            logger.warning("Login failed HTTP {}: {}", resp.status_code, redact_secrets((resp.text or "")[:200]))
+            raise Exception(f"Login failed HTTP {resp.status_code}.")
         cookies = {c.name: c.value for c in s.cookies.jar} if hasattr(s.cookies, "jar") else dict(s.cookies)
         # curl_cffi cookies may expose via .get
         token = s.cookies.get("nauk_at") if hasattr(s.cookies, "get") else cookies.get("nauk_at")
@@ -164,14 +170,17 @@ class NaukriClient:
         p = Config.HEADLINE_STATE_PATH
         if p.exists():
             try:
-                with open(p, "r", encoding="utf-8") as f:
-                    saved = json.load(f)
+                raw = p.read_bytes()
+                if len(raw) > 64 * 1024:
+                    logger.warning("Headline state file suspiciously large, ignoring.")
+                else:
+                    saved = json.loads(raw.decode("utf-8"))
                     if isinstance(saved, dict):
                         if saved.get("base"):
-                            state["base"] = str(saved["base"]).strip()
+                            state["base"] = str(saved["base"]).strip()[:MAX_HEADLINE_LEN]
                         state["last_dot"] = bool(saved.get("last_dot", False))
             except Exception as e:
-                logger.warning("Could not read headline state: {}", e)
+                logger.warning("Could not read headline state: {}", redact_secrets(str(e)))
         if not state["base"] and Config.BASE_HEADLINE:
             state["base"] = Config.BASE_HEADLINE.strip().rstrip(".").strip()
         return state
@@ -181,22 +190,20 @@ class NaukriClient:
         base = (headline or "").strip().rstrip(".").strip()
         if not base:
             raise ValueError("Headline is empty.")
+        if len(base) > MAX_HEADLINE_LEN:
+            raise ValueError(f"Headline too long ({len(base)} chars, max {MAX_HEADLINE_LEN}).")
         try:
-            Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-            with open(Config.HEADLINE_STATE_PATH, "w", encoding="utf-8") as f:
-                json.dump({"base": base, "last_dot": False}, f, indent=2)
+            write_secure_json(Config.HEADLINE_STATE_PATH, {"base": base, "last_dot": False})
         except Exception as e:
-            logger.warning("Could not save headline state: {}", e)
-        logger.info("Base headline set to: '{}'", base)
+            logger.warning("Could not save headline state: {}", redact_secrets(str(e)))
+        logger.info("Base headline set ({} chars).", len(base))
         return base
 
     def _save_headline_state(self, base: str, last_dot: bool):
         try:
-            Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-            with open(Config.HEADLINE_STATE_PATH, "w", encoding="utf-8") as f:
-                json.dump({"base": base, "last_dot": last_dot}, f, indent=2)
+            write_secure_json(Config.HEADLINE_STATE_PATH, {"base": base, "last_dot": last_dot})
         except Exception as e:
-            logger.warning("Could not save headline state: {}", e)
+            logger.warning("Could not save headline state: {}", redact_secrets(str(e)))
 
     def _do_get_mod_dt_blocking(self, cookies: dict, token: Optional[str]) -> Optional[str]:
         """Dashboard mod_dt = profile last-modified timestamp. Used to verify updates."""
@@ -213,7 +220,7 @@ class NaukriClient:
                 d = r.json()
                 return d.get("dashBoard", {}).get("mod_dt")
         except Exception as e:
-            logger.debug("mod_dt fetch failed: {}", e)
+            logger.debug("mod_dt fetch failed: {}", redact_secrets(str(e)))
         return None
 
     def _do_update_headline_blocking(self, cookies: dict, token: Optional[str], new_headline: str) -> Dict[str, Any]:
@@ -239,7 +246,7 @@ class NaukriClient:
                 d = r.json()
                 pid = d.get("profileId") or d.get("dashBoard", {}).get("profileId")
         except Exception as e:
-            logger.debug("Dashboard for profileId failed: {}", e)
+            logger.debug("Dashboard for profileId failed: {}", redact_secrets(str(e)))
         if not pid:
             return {"success": False, "message": "Could not get profileId from dashboard."}
 
@@ -251,14 +258,16 @@ class NaukriClient:
             try:
                 body = r.json()
                 if body.get("status") is False or body.get("success") is False:
-                    return {"success": False, "message": f"Naukri rejected update: {str(body)[:200]}"}
+                    logger.warning("Naukri rejected update: {}", redact_secrets(str(body)[:200]))
+                    return {"success": False, "message": "Naukri rejected update."}
             except Exception:
                 pass
             fresh_cookies = {c.name: c.value for c in s.cookies.jar} if hasattr(s.cookies, "jar") else dict(s.cookies)
             return {"success": True, "message": "Updated.", "cookies": fresh_cookies}
         if r.status_code == 401:
             return {"success": False, "message": "Session expired (401). Will re-login."}
-        return {"success": False, "message": f"Update failed HTTP {r.status_code}: {(r.text or '')[:200]}"}
+        logger.warning("Update failed HTTP {}: {}", r.status_code, redact_secrets((r.text or "")[:200]))
+        return {"success": False, "message": f"Update failed HTTP {r.status_code}."}
 
     # ---------- async public API (same signatures as before) ----------
     async def _ensure_login(self, cookies: dict, token: Optional[str]) -> tuple[dict, str]:
@@ -303,8 +312,8 @@ class NaukriClient:
             result["message"] = f"Tracked headline. Profile last modified: {mod_dt or 'unknown'}."
             return result
         except Exception as e:
-            result["message"] = str(e)
-            logger.error("get_current_headline failed: {}", e)
+            result["message"] = "Could not fetch headline — check server logs."
+            logger.error("get_current_headline failed: {}", redact_secrets(str(e)))
             return result
 
     async def update_profile_headline(self, custom_headline: Optional[str] = None) -> Dict[str, Any]:
@@ -342,7 +351,7 @@ class NaukriClient:
                 new_headline = base + ("." if new_last_dot else "")
             result["old_headline"] = old_headline
             result["new_headline"] = new_headline
-            logger.info("Headline: '{}' -> '{}'", old_headline, new_headline)
+            logger.info("Headline toggle: {} -> {} chars", len(old_headline), len(new_headline))
 
             # 3) Snapshot mod_dt before
             mod_before = await asyncio.to_thread(self._do_get_mod_dt_blocking, cookies, token)
@@ -380,6 +389,6 @@ class NaukriClient:
                 )
             return result
         except Exception as e:
-            result["message"] = str(e)
-            logger.error("update_profile_headline failed: {}", e)
+            result["message"] = "Update failed — check server logs."
+            logger.error("update_profile_headline failed: {}", redact_secrets(str(e)))
             return result
