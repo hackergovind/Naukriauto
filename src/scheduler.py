@@ -1,14 +1,21 @@
 ﻿import asyncio
+import html as _html
 from datetime import datetime
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from src.config import Config, logger
+from src.config import Config, logger, redact_secrets
 from src.naukri_client import NaukriClient
+
+def _esc(text: object) -> str:
+    return _html.escape(str(text), quote=False)
 
 class SchedulerManager:
     def __init__(self, bot_app=None):
-        self.tz = pytz.timezone(Config.TIMEZONE)
+        try:
+            self.tz = pytz.timezone(Config.get_timezone_name())
+        except Exception:
+            self.tz = pytz.timezone("Asia/Kolkata")
         self.scheduler = AsyncIOScheduler(timezone=self.tz)
         self.client = NaukriClient()
         self.bot_app = bot_app
@@ -28,10 +35,10 @@ class SchedulerManager:
                 await self.bot_app.bot.send_message(
                     chat_id=user_id,
                     text=message,
-                    parse_mode="Markdown"
+                    parse_mode="HTML"
                 )
             except Exception as e:
-                logger.error("Failed to send Telegram notification to user {}: {}", user_id, e)
+                logger.error("Failed to send Telegram notification to user {}: {}", user_id, redact_secrets(str(e)))
 
     async def execute_daily_update(self, is_manual: bool = False) -> dict:
         """Execute the headline update workflow and report status."""
@@ -50,20 +57,22 @@ class SchedulerManager:
 
         if result["success"]:
             msg = (
-                f"✅ *Naukri Profile Updated Successfully!*\n\n"
-                f"🕒 *Time:* `{self.last_run_status['timestamp']}`\n"
-                f"⚡ *Trigger:* `{trigger_type}`\n\n"
-                f"📝 *Old Headline:*\n`{result['old_headline']}`\n\n"
-                f"✨ *New Headline:*\n`{result['new_headline']}`\n\n"
-                f"🚀 *Status:* Headline timestamp refreshed on Naukri."
+                "✅ <b>Naukri Profile Updated Successfully!</b>\n\n"
+                f"🕒 <b>Time:</b> <code>{_esc(self.last_run_status['timestamp'])}</code>\n"
+                f"⚡ <b>Trigger:</b> <code>{_esc(trigger_type)}</code>\n\n"
+                f"📝 <b>Old Headline:</b>\n<code>{_esc(result['old_headline'])}</code>\n\n"
+                f"✨ <b>New Headline:</b>\n<code>{_esc(result['new_headline'])}</code>\n\n"
+                "🚀 <b>Status:</b> Headline timestamp refreshed on Naukri."
             )
         else:
+            # Never forward upstream error bodies to chat — log redacted server-side.
+            logger.warning("Scheduled update failed: {}", redact_secrets(str(result['message'])))
             msg = (
-                f"❌ *Naukri Profile Update Failed!*\n\n"
-                f"🕒 *Time:* `{self.last_run_status['timestamp']}`\n"
-                f"⚡ *Trigger:* `{trigger_type}`\n\n"
-                f"⚠️ *Error:* {result['message']}\n"
-                f"Please check your credentials in `.env` if needed."
+                "❌ <b>Naukri Profile Update Failed!</b>\n\n"
+                f"🕒 <b>Time:</b> <code>{_esc(self.last_run_status['timestamp'])}</code>\n"
+                f"⚡ <b>Trigger:</b> <code>{_esc(trigger_type)}</code>\n\n"
+                "⚠️ <b>Error:</b> update failed — check server logs.\n"
+                "Please check your credentials in <code>.env</code> if needed."
             )
 
         await self.notify_users(msg)
@@ -91,7 +100,7 @@ class SchedulerManager:
         self.scheduler.start()
         logger.info(
             "Scheduler active. Daily updates scheduled for {} ({})",
-            ", ".join(times), Config.TIMEZONE
+            ", ".join(times), Config.get_timezone_name()
         )
 
     def get_next_run_time(self) -> str:

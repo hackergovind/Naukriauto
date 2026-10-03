@@ -27,8 +27,10 @@ ENV/
 # Environment & Credentials
 .env
 data/session.json
-data/*.png
+data/headline_state.json
+data/*.json
 data/*.log
+data/*.png
 
 # Logs & Playwright
 logs/

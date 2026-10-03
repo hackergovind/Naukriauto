@@ -7,11 +7,13 @@ on:
   workflow_dispatch:  # manual "Run workflow" button
 
 permissions:
-  contents: write  # needed to commit the dot-toggle state back
+  contents: read  # least privilege by default; persist job escalates below
 
 jobs:
   update:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed only to commit the dot-toggle state back
     steps:
       - uses: actions/checkout@v4
 
@@ -33,9 +35,11 @@ jobs:
 
       # Runners are ephemeral: save the toggle state so the next run flips the other way.
       # (session.json stays gitignored — each run logs in fresh.)
+      # NOTE: headline_state.json holds your headline text (PII) in git history —
+      # keep this repository PRIVATE. It is gitignored locally; -f is required here.
       - name: Persist toggle state
         run: |
           git config user.name "naukri-auto-bot"
           git config user.email "naukri-auto-bot@users.noreply.github.com"
-          git add data/headline_state.json
+          git add -f data/headline_state.json
           git diff --cached --quiet || (git commit -m "chore: persist headline toggle state [skip ci]" && git push)

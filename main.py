@@ -39,7 +39,7 @@ async def run_scheduler_only(scheduler_mgr: SchedulerManager):
     """Server mode: scheduler only, no Telegram. Ideal for basic CLI servers."""
     scheduler_mgr.start()
     logger.info("Scheduler-only mode. Updates at: {} ({}). Press Ctrl+C to stop.",
-                ",".join(Config.get_schedule_times()), Config.TIMEZONE)
+                ",".join(Config.get_schedule_times()), Config.get_timezone_name())
     try:
         while True:
             await asyncio.sleep(3600)
@@ -72,7 +72,7 @@ async def run_oneshot(action: str):
             sys.exit(2)
     elif action == "check":
         errors = Config.validate()
-        print(f"Schedule: {','.join(Config.get_schedule_times())} ({Config.TIMEZONE})")
+        print(f"Schedule: {','.join(Config.get_schedule_times())} ({Config.get_timezone_name()})")
         print(f"Email set: {bool(Config.NAUKRI_EMAIL)}")
         print(f"Password set: {bool(Config.NAUKRI_PASSWORD)}")
         print(f"Telegram token set: {bool(Config.TELEGRAM_BOT_TOKEN)}")
